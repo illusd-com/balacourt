@@ -1,11 +1,11 @@
-import { getLegalContext } from "./laws";
+import { getLegalContextAsync } from "./laws";
 import type { CaseRecord, PersonRecord } from "./turso";
 
-export function buildSystemPrompt(opts?: {
+export async function buildSystemPrompt(opts?: {
   persons?: PersonRecord[];
   cases?: CaseRecord[];
-}): string {
-  const legal = getLegalContext();
+}): Promise<string> {
+  const legal = await getLegalContextAsync();
 
   let historyBlock = "";
   if (opts?.persons?.length || opts?.cases?.length) {

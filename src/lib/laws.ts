@@ -22,9 +22,13 @@ export function getPenaltiesText(): string {
   return cachedPenalties;
 }
 
-export function getLegalContext(maxChars = 90000): string {
+/** 本機優先；空則回傳空字串（部署時可改遠端載入） */
+export function getLegalContext(maxChars = 80000): string {
   const laws = getLawsText();
   const penalties = getPenaltiesText();
+  if (!laws && !penalties) {
+    return "【法規說明】本機未附完整法規檔。請依巴拉國官方 GitHub（illusd/blapolice-file）docs/laws.md 與 penalties.md 之原則審理：罪刑法定、不設死刑、最重無期徒刑。引用時註明條號。";
+  }
   const combined = `【巴拉國法律全文】\n${laws}\n\n【巴拉國處罰內容全文】\n${penalties}`;
   if (combined.length <= maxChars) return combined;
   const criminal = laws.includes("刑字第 1 號")

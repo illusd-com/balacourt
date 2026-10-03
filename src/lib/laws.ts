@@ -1,12 +1,29 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 
+const LAWS_URL =
+  "https://raw.githubusercontent.com/illusd/blapolice-file/main/docs/laws.md";
+const PENALTIES_URL =
+  "https://raw.githubusercontent.com/illusd/blapolice-file/main/docs/penalties.md";
+
 let cachedLaws: string | null = null;
 let cachedPenalties: string | null = null;
 
 function readDataFile(name: string): string {
   try {
     return readFileSync(join(process.cwd(), "src", "data", name), "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+async function fetchRemote(url: string): Promise<string> {
+  try {
+    const res = await fetch(url, {
+      next: { revalidate: 3600 },
+    } as RequestInit);
+    if (!res.ok) return "";
+    return await res.text();
   } catch {
     return "";
   }
@@ -22,13 +39,25 @@ export function getPenaltiesText(): string {
   return cachedPenalties;
 }
 
-/** 本機優先；空則回傳空字串（部署時可改遠端載入） */
-export function getLegalContext(maxChars = 80000): string {
-  const laws = getLawsText();
-  const penalties = getPenaltiesText();
-  if (!laws && !penalties) {
-    return "【法規說明】本機未附完整法規檔。請依巴拉國官方 GitHub（illusd/blapolice-file）docs/laws.md 與 penalties.md 之原則審理：罪刑法定、不設死刑、最重無期徒刑。引用時註明條號。";
+export async function getLawsTextAsync(): Promise<string> {
+  let text = getLawsText();
+  if (!text) {
+    text = await fetchRemote(LAWS_URL);
+    if (text) cachedLaws = text;
   }
+  return text;
+}
+
+export async function getPenaltiesTextAsync(): Promise<string> {
+  let text = getPenaltiesText();
+  if (!text) {
+    text = await fetchRemote(PENALTIES_URL);
+    if (text) cachedPenalties = text;
+  }
+  return text;
+}
+
+function combineLegal(laws: string, penalties: string, maxChars: number): string {
   const combined = `【巴拉國法律全文】\n${laws}\n\n【巴拉國處罰內容全文】\n${penalties}`;
   if (combined.length <= maxChars) return combined;
   const criminal = laws.includes("刑字第 1 號")
@@ -36,4 +65,22 @@ export function getLegalContext(maxChars = 80000): string {
     : laws.slice(0, Math.floor(maxChars * 0.55));
   const penPart = penalties.slice(0, Math.floor(maxChars * 0.4));
   return `【巴拉國法律（節錄）】\n${criminal.slice(0, Math.floor(maxChars * 0.55))}\n\n【巴拉國處罰內容（節錄）】\n${penPart}`;
+}
+
+export async function getLegalContextAsync(maxChars = 80000): Promise<string> {
+  const laws = await getLawsTextAsync();
+  const penalties = await getPenaltiesTextAsync();
+  if (!laws && !penalties) {
+    return "【法規說明】暫時無法載入法規全文。請依罪刑法定、不設死刑、最重無期徒刑原則審理，並引用巴拉國官方條號。";
+  }
+  return combineLegal(laws, penalties, maxChars);
+}
+
+export function getLegalContext(maxChars = 80000): string {
+  const laws = getLawsText();
+  const penalties = getPenaltiesText();
+  if (!laws && !penalties) {
+    return "【法規說明】本機未附法規檔，請改用 getLegalContextAsync 遠端載入。";
+  }
+  return combineLegal(laws, penalties, maxChars);
 }

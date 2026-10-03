@@ -10,16 +10,22 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { messages } = body;
+
     if (!messages || !Array.isArray(messages)) {
       return NextResponse.json({ error: "缺少 messages" }, { status: 400 });
     }
+
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "未設定 NVIDIA_API_KEY。請在 Vercel 環境變數加入 NVIDIA_API_KEY" },
+        {
+          error:
+            "未設定 NVIDIA_API_KEY。請在 Vercel 環境變數加入 NVIDIA_API_KEY=nvapi-...",
+        },
         { status: 500 }
       );
     }
+
     const recentText = messages
       .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
       .slice(-8)
@@ -35,11 +41,14 @@ export async function POST(req: NextRequest) {
     } catch (e) {
       console.error("Turso lookup error:", e);
     }
-    const systemPrompt = buildSystemPrompt({ persons, cases });
+
+    const systemPrompt = await buildSystemPrompt({ persons, cases });
+
     const chatMessages = [
       { role: "system", content: systemPrompt },
       ...messages.filter((m: { role: string }) => m.role !== "system"),
     ];
+
     const response = await fetch(
       "https://integrate.api.nvidia.com/v1/chat/completions",
       {
@@ -50,7 +59,8 @@ export async function POST(req: NextRequest) {
           Accept: "application/json",
         },
         body: JSON.stringify({
-          model: process.env.NVIDIA_MODEL || "nvidia/nemotron-3-ultra-550b-a55b",
+          model:
+            process.env.NVIDIA_MODEL || "nvidia/nemotron-3-ultra-550b-a55b",
           messages: chatMessages,
           temperature: 0.3,
           max_tokens: 4096,
@@ -58,17 +68,26 @@ export async function POST(req: NextRequest) {
         }),
       }
     );
+
     const data = await response.json();
+
     if (!response.ok) {
       console.error("NVIDIA API error:", data);
-      const msg = data.error?.message || data.message || data.detail || "NVIDIA API 請求失敗";
+      const msg =
+        data.error?.message ||
+        data.message ||
+        data.detail ||
+        "NVIDIA API 請求失敗";
       return NextResponse.json({ error: msg }, { status: response.status });
     }
+
     let content = data.choices?.[0]?.message?.content || "";
+
     const tags = parseJudgmentTags(content);
     if (tags.case_summary || tags.punishments) {
       const lastUser =
-        [...messages].reverse().find((m: { role: string }) => m.role === "user")?.content || "";
+        [...messages].reverse().find((m: { role: string }) => m.role === "user")
+          ?.content || "";
       try {
         await saveJudgment({
           id_number: tags.id_number || idNumbers[0] || null,
@@ -86,6 +105,7 @@ export async function POST(req: NextRequest) {
         console.error("Turso save error:", e);
       }
     }
+
     content = content
       .replace(/\[CASE_SUMMARY\][\s\S]*?\[\/CASE_SUMMARY\]/gi, "")
       .replace(/\[ID_NUMBER\][\s\S]*?\[\/ID_NUMBER\]/gi, "")
@@ -97,9 +117,13 @@ export async function POST(req: NextRequest) {
       .replace(/\[FOLLOW_UP\][\s\S]*?\[\/FOLLOW_UP\]/gi, "")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
+
     return NextResponse.json({
       content,
-      meta: { matched_persons: persons.length, matched_cases: cases.length },
+      meta: {
+        matched_persons: persons.length,
+        matched_cases: cases.length,
+      },
     });
   } catch (err) {
     console.error(err);

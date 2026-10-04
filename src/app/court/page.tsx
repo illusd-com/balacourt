@@ -20,6 +20,7 @@ export default function CourtPage() {
     plaintiffId: "",
   });
   const [formError, setFormError] = useState("");
+  const [testMode, setTestMode] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -49,9 +50,26 @@ export default function CourtPage() {
     setMessages([
       {
         role: "assistant",
-        content: `開庭資料已登錄。\n\n・被告：${p.defendant}${p.defendantId ? `（證號 ${p.defendantId}）` : ""}\n・提告人：${p.plaintiff}${p.plaintiffId ? `（證號 ${p.plaintiffId}）` : ""}\n\n請以日常用語陳述案情。系統會先轉成法律用語，再交由 LawSI 依巴拉國法規審理。\n\n※ 僅處理巴拉國法律相關事項。`,
+        content: `開庭資料已登錄。\n\n・被告：${p.defendant}${p.defendantId ? `（證號 ${p.defendantId}）` : ""}\n・提告人：${p.plaintiff}${p.plaintiffId ? `（證號 ${p.plaintiffId}）` : ""}\n\n請以日常用語陳述案情。系統會先轉成法律用語，再交由 LawSI 依巴拉國法規審理。\n\n※ 僅處理巴拉國法律相關事項。${testMode ? "\n\n【測試模式】本場結束後不寫入且會清除雙方紀錄。" : ""}`,
       },
     ]);
+  }
+
+  function toggleTestMode(e: React.ChangeEvent<HTMLInputElement>) {
+    if (e.target.checked) {
+      const pwd = window.prompt("請輸入測試模式密碼");
+      if (pwd === "922") {
+        setTestMode(true);
+      } else {
+        e.target.checked = false;
+        setTestMode(false);
+        if (pwd !== null) {
+          window.alert("密碼錯誤，無法啟用測試模式。");
+        }
+      }
+    } else {
+      setTestMode(false);
+    }
   }
 
   function resetTrial() {
@@ -60,6 +78,7 @@ export default function CourtPage() {
     setInput("");
     setLastLegalText(null);
     setFormError("");
+    setTestMode(false);
   }
 
   async function sendMessage() {
@@ -80,6 +99,7 @@ export default function CourtPage() {
           plaintiff: parties.plaintiff,
           defendantId: parties.defendantId,
           plaintiffId: parties.plaintiffId,
+          testMode,
           messages: [
             ...messages.map((m) => ({ role: m.role, content: m.content })),
             { role: "user", content: text },
@@ -164,6 +184,11 @@ export default function CourtPage() {
                 </p>
                 <p>被告：{parties.defendant}</p>
                 <p>提告人：{parties.plaintiff}</p>
+                {testMode && (
+                  <p style={{ color: "#b91c1c", fontWeight: 600, marginTop: "0.5rem" }}>
+                    測試模式已啟用（結束不留存／清除紀錄）
+                  </p>
+                )}
                 <button
                   type="button"
                   className="btn btn-ghost"
@@ -250,6 +275,29 @@ export default function CourtPage() {
                       placeholder="選填"
                       autoComplete="off"
                     />
+                  </label>
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: "0.5rem",
+                      fontSize: "0.8125rem",
+                      color: "var(--text-secondary)",
+                      cursor: "pointer",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={testMode}
+                      onChange={toggleTestMode}
+                      style={{ marginTop: "0.2rem" }}
+                    />
+                    <span>
+                      <strong style={{ color: "var(--text)" }}>測試模式</strong>
+                      （需密碼）。勾選後本場審判結束時<strong>不寫入</strong>且會
+                      <strong>清除</strong>雙方在資料庫的紀錄。
+                    </span>
                   </label>
                 </div>
 

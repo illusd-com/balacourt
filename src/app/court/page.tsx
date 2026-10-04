@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { MarkdownBody } from "@/components/MarkdownBody";
 
 type Message = { role: "user" | "assistant"; content: string };
 
@@ -50,7 +51,7 @@ export default function CourtPage() {
     setMessages([
       {
         role: "assistant",
-        content: `開庭資料已登錄。\n\n・被告：${p.defendant}${p.defendantId ? `（證號 ${p.defendantId}）` : ""}\n・提告人：${p.plaintiff}${p.plaintiffId ? `（證號 ${p.plaintiffId}）` : ""}\n\n請以日常用語陳述案情。系統會先轉成法律用語，再交由 LawSI 依巴拉國法規審理。\n\n※ 僅處理巴拉國法律相關事項。${testMode ? "\n\n【測試模式】本場結束後不寫入且會清除雙方紀錄。" : ""}`,
+        content: `開庭資料已登錄。\n\n・被告：${p.defendant}${p.defendantId ? `（證號 ${p.defendantId}）` : ""}\n・提告人：${p.plaintiff}${p.plaintiffId ? `（證號 ${p.plaintiffId}）` : ""}\n\n請以日常用語陳述案情。LawSI 會轉成法律用語並依巴拉國法規審理（Markdown 呈現）。\n\n※ 僅處理巴拉國法律相關事項。${testMode ? "\n\n**【測試模式】** 本場結束後不寫入且會清除雙方紀錄。" : ""}`,
       },
     ]);
   }
@@ -144,7 +145,7 @@ export default function CourtPage() {
         <header className="section-header" style={{ marginBottom: "1.5rem" }}>
           <h1 className="section-title">AI法廳 · LawSI</h1>
           <p style={{ color: "var(--text-secondary)", marginTop: "0.5rem", fontSize: "0.9375rem" }}>
-            開庭須先登錄被告與提告人；陳述將自動轉為法律用語後再審理
+            開庭須先登錄被告與提告人；判決以 Markdown 呈現
           </p>
         </header>
 
@@ -165,8 +166,8 @@ export default function CourtPage() {
             >
               <li>1. 必填被告、提告人姓名</li>
               <li>2. 以日常用語陳述案情</li>
-              <li>3. 系統轉為法律用語</li>
-              <li>4. LawSI 依巴拉國法審理</li>
+              <li>3. LawSI 轉法律用語並審理</li>
+              <li>4. 判決以 Markdown 呈現</li>
             </ul>
             {parties && (
               <div
@@ -317,7 +318,11 @@ export default function CourtPage() {
                   {messages.map((m, i) => (
                     <div key={i} className={`msg ${m.role === "user" ? "msg-user" : "msg-ai"}`}>
                       <div className="msg-role">{m.role === "user" ? "您" : "LawSI"}</div>
-                      <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+                      {m.role === "assistant" ? (
+                        <MarkdownBody content={m.content} />
+                      ) : (
+                        <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+                      )}
                     </div>
                   ))}
                   {lastLegalText && (
@@ -330,8 +335,8 @@ export default function CourtPage() {
                       }}
                     >
                       <div className="msg-role">系統 · 法律用語轉換</div>
-                      <div style={{ whiteSpace: "pre-wrap", color: "var(--text-secondary)" }}>
-                        {lastLegalText}
+                      <div style={{ color: "var(--text-secondary)" }}>
+                        <MarkdownBody content={lastLegalText} />
                       </div>
                     </div>
                   )}
@@ -344,7 +349,7 @@ export default function CourtPage() {
                         <span />
                       </div>
                       <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
-                        正在轉為法律用語並送交 LawSI…
+                        LawSI 審理中…
                       </p>
                     </div>
                   )}

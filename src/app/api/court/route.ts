@@ -23,8 +23,8 @@ async function callNvidia(
     body: JSON.stringify({
       model: process.env.NVIDIA_MODEL || "nvidia/nemotron-3-ultra-550b-a55b",
       messages,
-      temperature: opts?.temperature ?? 0.3,
-      max_tokens: opts?.max_tokens ?? 4096,
+      temperature: opts?.temperature ?? 0.25,
+      max_tokens: opts?.max_tokens ?? 2800,
       top_p: 0.9,
     }),
   });
@@ -37,41 +37,18 @@ async function callNvidia(
   return (data.choices?.[0]?.message?.content || "").trim();
 }
 
-async function toLegalLanguage(
-  apiKey: string,
-  raw: string,
-  parties: {
-    defendant: string;
-    plaintiff: string;
-    defendantId?: string;
-    plaintiffId?: string;
-  }
-): Promise<string> {
-  const system = `你是巴拉國法廳的書記官。任務：把使用者的日常陳述改寫成正式法律用語，供法官審理。
-
-規則：
-1. 必須使用下列當事人稱謂，不得改名：
-   - 被告：${parties.defendant}${parties.defendantId ? `（身分證字號 ${parties.defendantId}）` : ""}
-   - 提告人／告訴人：${parties.plaintiff}${parties.plaintiffId ? `（身分證字號 ${parties.plaintiffId}）` : ""}
-2. 使用客觀、第三人稱、精簡法言法語（如：涉嫌、指稱、行為時、結果、證據、損害、故意／過失等）。
-3. 保留所有具體事實（時間、地點、行為、結果、金額、傷勢等），不得虛構。
-4. 若資訊不足，在文末以「尚待釐清：…」列出。
-5. 只輸出改寫後的法律用語正文，不要標題、不要解釋、不要判決。`;
-
-  return callNvidia(
-    apiKey,
-    [
-      { role: "system", content: system },
-      { role: "user", content: raw },
-    ],
-    { temperature: 0.2, max_tokens: 2048 }
+function extractLegalSection(content: string): string | null {
+  const m = content.match(
+    /【法律用語案情】\s*([\s\S]*?)(?=\n## |\n### 一、|\n### 1\.|\n一、|\n【|$)/
   );
+  return m ? m[1].trim() : null;
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { messages, defendant, plaintiff, defendantId, plaintiffId, testMode } = body;
+    const { messages, defendant, plaintiff, defendantId, plaintiffId, testMode } =
+      body;
     const isTest = Boolean(testMode);
 
     if (!messages || !Array.isArray(messages)) {
@@ -119,32 +96,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "缺少使用者陳述" }, { status: 400 });
     }
 
-    let legalText = "";
-    try {
-      legalText = await toLegalLanguage(apiKey, lastUser, parties);
-    } catch (e) {
-      console.error("legal rewrite error:", e);
-      return NextResponse.json(
-        {
-          error:
-            e instanceof Error
-              ? `法律用語轉換失敗：${e.message}`
-              : "法律用語轉換失敗",
-        },
-        { status: 502 }
-      );
-    }
-
-    if (!legalText) {
-      return NextResponse.json(
-        { error: "法律用語轉換結果為空" },
-        { status: 502 }
-      );
-    }
-
     const recentText = [
       lastUser,
-      legalText,
       parties.defendant,
       parties.plaintiff,
       parties.defendantId || "",
@@ -169,30 +122,45 @@ export async function POST(req: NextRequest) {
     }
 
     const systemPrompt = await buildSystemPrompt({ persons, cases });
-    const partyBlock = `【本案當事人（已登錄，必須採納）】\n被告：${parties.defendant}${parties.defendantId ? `，身分證字號 ${parties.defendantId}` : ""}\n提告人：${parties.plaintiff}${parties.plaintiffId ? `，身分證字號 ${parties.plaintiffId}` : ""}\n\n【書記官整理之法律用語案情】\n${legalText}`;
+    const speedHint = `
+## 輸出與速度要求（務必遵守）
+1. 先用日常陳述轉寫成法律用語，放在最開頭區塊：
+【法律用語案情】
+（第三人稱、精簡法言法語，含被告／提告人稱謂）
+2. 接著依固定結構輸出判決（使用 Markdown：##／###、**粗體**、列表）。
+3. 條文引用精準即可，避免冗長重複；總篇幅控制精簡。
+4. 罰鍰等金額一律使用 Bla$。
+`;
+
+    const partyBlock = `【本案當事人（已登錄，必須採納）】
+被告：${parties.defendant}${parties.defendantId ? `，身分證字號 ${parties.defendantId}` : ""}
+提告人：${parties.plaintiff}${parties.plaintiffId ? `，身分證字號 ${parties.plaintiffId}` : ""}
+
+【使用者日常陳述】
+${lastUser}
+
+請先轉成【法律用語案情】，再依巴拉國法規完成判決（Markdown 格式）。`;
 
     const chatMessages = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: systemPrompt + "\n" + speedHint },
       { role: "user", content: partyBlock },
     ];
 
     let content = "";
     try {
       content = await callNvidia(apiKey, chatMessages, {
-        temperature: 0.3,
-        max_tokens: 4096,
+        temperature: 0.25,
+        max_tokens: 2800,
       });
     } catch (e) {
       console.error("LawSI error:", e);
       return NextResponse.json(
-        {
-          error: e instanceof Error ? e.message : "LawSI 審理失敗",
-          legal_text: legalText,
-        },
+        { error: e instanceof Error ? e.message : "LawSI 審理失敗" },
         { status: 502 }
       );
     }
 
+    const legalText = extractLegalSection(content) || "";
     const tags = parseJudgmentTags(content);
     let cleared = { deletedPersons: 0, deletedCases: 0 };
 
@@ -234,7 +202,7 @@ export async function POST(req: NextRequest) {
     if (isTest) {
       content =
         content +
-        "\n\n——\n【測試模式】本場審判未寫入資料庫，並已嘗試清除雙方既有紀錄。";
+        "\n\n---\n**【測試模式】** 本場審判未寫入資料庫，並已嘗試清除雙方既有紀錄。";
     }
 
     content = content

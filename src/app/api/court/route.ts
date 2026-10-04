@@ -30,10 +30,10 @@ async function callNvidia(
       Accept: "application/json",
     },
     body: JSON.stringify({
-      model: process.env.NVIDIA_MODEL || "nvidia/nemotron-3-ultra-550b-a55b",
+      model: process.env.NVIDIA_MODEL || "google/gemma-3-12b-it",
       messages,
       temperature: opts?.temperature ?? 0.25,
-      max_tokens: opts?.max_tokens ?? 2800,
+      max_tokens: opts?.max_tokens ?? 4096,
       top_p: 0.9,
     }),
   });
@@ -179,7 +179,7 @@ export async function POST(req: NextRequest) {
     try {
       content = await callNvidia(apiKey, chatMessages, {
         temperature: 0.25,
-        max_tokens: 2800,
+        max_tokens: 4096,
       });
     } catch (e) {
       console.error("LawSI error:", e);

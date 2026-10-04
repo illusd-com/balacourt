@@ -39,7 +39,7 @@ export default async function LawsPage() {
         <div className="card" style={{ marginBottom: "2rem" }}>
           <p className="card-label">罪刑法定</p>
           <p className="card-desc">
-            行為之處罰以行為時之法律有明文規定者為限。貨幣單位：巴拉幣（BD）。巴拉國不設死刑，最重主刑為無期徒刑。
+            行為之處罰以行為時之法律有明文規定者為限。貨幣單位：Bla$。巴拉國不設死刑，最重主刑為無期徒刑。
           </p>
         </div>
 

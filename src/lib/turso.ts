@@ -200,3 +200,45 @@ export async function saveJudgment(data: {
     }
   }
 }
+
+/** 測試模式：清除雙方在 persons / case_records 中的紀錄 */
+export async function clearPartyRecords(opts: {
+  idNumbers?: string[];
+  names?: string[];
+}): Promise<{ deletedPersons: number; deletedCases: number }> {
+  const db = getTurso();
+  if (!db) return { deletedPersons: 0, deletedCases: 0 };
+  await ensureSchema();
+  let deletedPersons = 0;
+  let deletedCases = 0;
+  const ids = [...new Set((opts.idNumbers || []).filter(Boolean))];
+  const names = [...new Set((opts.names || []).filter((n) => n && n.length >= 2))];
+
+  for (const id of ids) {
+    const p = await db.execute({
+      sql: "DELETE FROM persons WHERE id_number = ?",
+      args: [id],
+    });
+    deletedPersons += Number(p.rowsAffected || 0);
+    const c = await db.execute({
+      sql: "DELETE FROM case_records WHERE id_number = ?",
+      args: [id],
+    });
+    deletedCases += Number(c.rowsAffected || 0);
+  }
+
+  for (const name of names) {
+    const p = await db.execute({
+      sql: "DELETE FROM persons WHERE name = ?",
+      args: [name],
+    });
+    deletedPersons += Number(p.rowsAffected || 0);
+    const c = await db.execute({
+      sql: "DELETE FROM case_records WHERE name = ?",
+      args: [name],
+    });
+    deletedCases += Number(c.rowsAffected || 0);
+  }
+
+  return { deletedPersons, deletedCases };
+}

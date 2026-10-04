@@ -4,7 +4,7 @@ import {
   extractIdentifiers,
   parseJudgmentTags,
 } from "@/lib/system-prompt";
-import { lookupPersons, saveJudgment } from "@/lib/turso";
+import { lookupPersons, saveJudgment, clearPartyRecords } from "@/lib/turso";
 
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
@@ -71,7 +71,8 @@ async function toLegalLanguage(
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { messages, defendant, plaintiff, defendantId, plaintiffId } = body;
+    const { messages, defendant, plaintiff, defendantId, plaintiffId, testMode } = body;
+    const isTest = Boolean(testMode);
 
     if (!messages || !Array.isArray(messages)) {
       return NextResponse.json({ error: "缺少 messages" }, { status: 400 });
@@ -193,7 +194,23 @@ export async function POST(req: NextRequest) {
     }
 
     const tags = parseJudgmentTags(content);
-    if (tags.case_summary || tags.punishments) {
+    let cleared = { deletedPersons: 0, deletedCases: 0 };
+
+    if (isTest) {
+      try {
+        const clearIds = [
+          parties.defendantId,
+          parties.plaintiffId,
+          tags.id_number || undefined,
+        ].filter(Boolean) as string[];
+        cleared = await clearPartyRecords({
+          idNumbers: clearIds,
+          names: [parties.defendant, parties.plaintiff],
+        });
+      } catch (e) {
+        console.error("Turso clear (test mode) error:", e);
+      }
+    } else if (tags.case_summary || tags.punishments) {
       try {
         await saveJudgment({
           id_number:
@@ -212,6 +229,12 @@ export async function POST(req: NextRequest) {
       } catch (e) {
         console.error("Turso save error:", e);
       }
+    }
+
+    if (isTest) {
+      content =
+        content +
+        "\n\n——\n【測試模式】本場審判未寫入資料庫，並已嘗試清除雙方既有紀錄。";
     }
 
     content = content
@@ -234,6 +257,8 @@ export async function POST(req: NextRequest) {
         matched_cases: cases.length,
         defendant: parties.defendant,
         plaintiff: parties.plaintiff,
+        testMode: isTest,
+        cleared,
       },
     });
   } catch (err) {

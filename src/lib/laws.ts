@@ -76,7 +76,7 @@ function combineLegal(laws: string, penalties: string, maxChars: number): string
   return `【巴拉國法律（節錄）】\n${criminal.slice(0, Math.floor(maxChars * 0.55))}\n\n【巴拉國處罰內容（節錄）】\n${penPart}`;
 }
 
-export async function getLegalContextAsync(maxChars = 80000): Promise<string> {
+export async function getLegalContextAsync(maxChars = 45000): Promise<string> {
   const laws = await getLawsTextAsync();
   const penalties = await getPenaltiesTextAsync();
   if (!laws && !penalties) {
@@ -85,7 +85,7 @@ export async function getLegalContextAsync(maxChars = 80000): Promise<string> {
   return combineLegal(laws, penalties, maxChars);
 }
 
-export function getLegalContext(maxChars = 80000): string {
+export function getLegalContext(maxChars = 45000): string {
   const laws = getLawsText();
   const penalties = getPenaltiesText();
   if (!laws && !penalties) {

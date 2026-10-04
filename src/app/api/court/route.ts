@@ -4,7 +4,16 @@ import {
   extractIdentifiers,
   parseJudgmentTags,
 } from "@/lib/system-prompt";
-import { lookupPersons, saveJudgment, clearPartyRecords } from "@/lib/turso";
+import {
+  lookupPersons,
+  saveJudgment,
+  clearPartyRecords,
+} from "@/lib/turso";
+import {
+  getHearingSlip,
+  closeHearingSlip,
+  updateHearingMessages,
+} from "@/lib/hearing";
 
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
@@ -47,8 +56,16 @@ function extractLegalSection(content: string): string | null {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { messages, defendant, plaintiff, defendantId, plaintiffId, testMode } =
-      body;
+    const {
+      messages,
+      defendant,
+      plaintiff,
+      defendantId,
+      plaintiffId,
+      testMode,
+      slipId,
+      previousSlipId,
+    } = body;
     const isTest = Boolean(testMode);
 
     if (!messages || !Array.isArray(messages)) {
@@ -59,7 +76,7 @@ export async function POST(req: NextRequest) {
     const pla = typeof plaintiff === "string" ? plaintiff.trim() : "";
     if (!def || !pla) {
       return NextResponse.json(
-        { error: "開庭必須提供被告姓名（defendant）與提告人姓名（plaintiff）" },
+        { error: "開庭必須提供被告姓名與提告人姓名" },
         { status: 400 }
       );
     }
@@ -67,10 +84,7 @@ export async function POST(req: NextRequest) {
     const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        {
-          error:
-            "未設定 NVIDIA_API_KEY。請在 Vercel 環境變數加入 NVIDIA_API_KEY=nvapi-...",
-        },
+        { error: "未設定 NVIDIA_API_KEY" },
         { status: 500 }
       );
     }
@@ -91,7 +105,6 @@ export async function POST(req: NextRequest) {
     const lastUser =
       [...messages].reverse().find((m: { role: string }) => m.role === "user")
         ?.content || "";
-
     if (!lastUser.trim()) {
       return NextResponse.json({ error: "缺少使用者陳述" }, { status: 400 });
     }
@@ -121,28 +134,44 @@ export async function POST(req: NextRequest) {
       console.error("Turso lookup error:", e);
     }
 
+    let previousBlock = "";
+    const prevId =
+      typeof previousSlipId === "string"
+        ? (previousSlipId.match(/\d{15}/) || [])[0]
+        : undefined;
+    if (prevId) {
+      try {
+        const prev = await getHearingSlip(prevId, { publicView: true });
+        if (prev && prev.status === "closed") {
+          previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n被告：${prev.defendant}／提告人：${prev.plaintiff}\n前次判決：\n${(prev.judgment || "").slice(0, 6000)}\n`;
+        }
+      } catch (e) {
+        console.error("previous slip", e);
+      }
+    }
+    if (!previousBlock && typeof slipId === "string" && /^\d{15}$/.test(slipId)) {
+      try {
+        const current = await getHearingSlip(slipId);
+        if (current?.previous_slip_id) {
+          const prev = await getHearingSlip(current.previous_slip_id, {
+            publicView: true,
+          });
+          if (prev) {
+            previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n前次判決：\n${(prev.judgment || "").slice(0, 6000)}\n`;
+          }
+        }
+      } catch (e) {
+        console.error("bound previous", e);
+      }
+    }
+
     const systemPrompt = await buildSystemPrompt({ persons, cases });
-    const speedHint = `
-## 輸出與速度要求（務必遵守）
-1. 先用日常陳述轉寫成法律用語，放在最開頭區塊：
-【法律用語案情】
-（第三人稱、精簡法言法語，含被告／提告人稱謂）
-2. 接著依固定結構輸出判決（使用 Markdown：##／###、**粗體**、列表）。
-3. 條文引用精準即可，避免冗長重複；總篇幅控制精簡。
-4. 罰鍰等金額一律使用 Bla$。
-`;
+    const speedHint = `\n## 輸出要求\n1. 先輸出【法律用語案情】\n2. 再以 Markdown 輸出判決結構\n3. 罰鍰用 Bla$\n`;
 
-    const partyBlock = `【本案當事人（已登錄，必須採納）】
-被告：${parties.defendant}${parties.defendantId ? `，身分證字號 ${parties.defendantId}` : ""}
-提告人：${parties.plaintiff}${parties.plaintiffId ? `，身分證字號 ${parties.plaintiffId}` : ""}
-
-【使用者日常陳述】
-${lastUser}
-
-請先轉成【法律用語案情】，再依巴拉國法規完成判決（Markdown 格式）。`;
+    const partyBlock = `【本案當事人】\n被告：${parties.defendant}\n提告人：${parties.plaintiff}\n\n【使用者日常陳述】\n${lastUser}\n\n請先轉成【法律用語案情】，再依巴拉國法規判決（Markdown）。`;
 
     const chatMessages = [
-      { role: "system", content: systemPrompt + "\n" + speedHint },
+      { role: "system", content: systemPrompt + "\n" + speedHint + previousBlock },
       { role: "user", content: partyBlock },
     ];
 
@@ -161,6 +190,7 @@ ${lastUser}
     }
 
     const legalText = extractLegalSection(content) || "";
+    let summaryTitle = "";
     const tags = parseJudgmentTags(content);
     let cleared = { deletedPersons: 0, deletedCases: 0 };
 
@@ -176,7 +206,7 @@ ${lastUser}
           names: [parties.defendant, parties.plaintiff],
         });
       } catch (e) {
-        console.error("Turso clear (test mode) error:", e);
+        console.error("clear", e);
       }
     } else if (tags.case_summary || tags.punishments) {
       try {
@@ -195,13 +225,52 @@ ${lastUser}
           follow_up: tags.follow_up,
         });
       } catch (e) {
-        console.error("Turso save error:", e);
+        console.error("save", e);
+      }
+    }
+
+    if (typeof slipId === "string" && /^\d{15}$/.test(slipId)) {
+      try {
+        summaryTitle = (
+          tags.case_summary ||
+          tags.event ||
+          `${parties.defendant}與${parties.plaintiff}之案件`
+        )
+          .replace(/[\n\r]/g, " ")
+          .trim()
+          .slice(0, 80);
+
+        if (!isTest) {
+          await closeHearingSlip({
+            id: slipId,
+            messages: messages
+              .filter(
+                (m: { role: string }) =>
+                  m.role === "user" || m.role === "assistant"
+              )
+              .concat([{ role: "assistant", content }]),
+            legalText,
+            judgment: content,
+            summaryTitle,
+          });
+        } else {
+          await updateHearingMessages(
+            slipId,
+            messages
+              .filter(
+                (m: { role: string }) =>
+                  m.role === "user" || m.role === "assistant"
+              )
+              .concat([{ role: "assistant", content }])
+          );
+        }
+      } catch (e) {
+        console.error("close hearing", e);
       }
     }
 
     if (isTest) {
-      content =
-        content +
+      content +=
         "\n\n---\n**【測試模式】** 本場審判未寫入資料庫，並已嘗試清除雙方既有紀錄。";
     }
 
@@ -220,6 +289,8 @@ ${lastUser}
     return NextResponse.json({
       content,
       legal_text: legalText,
+      summary_title: summaryTitle || undefined,
+      slip_id: typeof slipId === "string" ? slipId : undefined,
       meta: {
         matched_persons: persons.length,
         matched_cases: cases.length,

@@ -4,7 +4,7 @@ import {
   updateHearingMessages,
   closeHearingSlip,
   parseMessages,
-} from "@/lib/turso";
+} from "@/lib/hearing";
 
 type Ctx = { params: Promise<{ id: string }> };
 

@@ -3,7 +3,7 @@ import {
   createHearingSlip,
   listClosedHearings,
   getHearingSlip,
-} from "@/lib/turso";
+} from "@/lib/hearing";
 
 export async function POST(req: NextRequest) {
   try {

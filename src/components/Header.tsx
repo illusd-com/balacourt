@@ -7,6 +7,7 @@ import { useState } from "react";
 const navItems = [
   { href: "/", label: "首頁" },
   { href: "/court", label: "AI法廳" },
+  { href: "/completed", label: "已完結審判" },
   { href: "/laws", label: "法規" },
   { href: "/about", label: "關於" },
 ];
@@ -32,7 +33,12 @@ export function Header() {
                 <li key={item.href}>
                   <Link
                     href={item.href}
-                    className={`nav-link ${pathname === item.href ? "active" : ""}`}
+                    className={`nav-link ${
+                      pathname === item.href ||
+                      (item.href !== "/" && pathname.startsWith(item.href))
+                        ? "active"
+                        : ""
+                    }`}
                   >
                     {item.label}
                   </Link>

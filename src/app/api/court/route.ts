@@ -6,13 +6,84 @@ import {
 } from "@/lib/system-prompt";
 import { lookupPersons, saveJudgment } from "@/lib/turso";
 
+const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
+
+async function callNvidia(
+  apiKey: string,
+  messages: { role: string; content: string }[],
+  opts?: { temperature?: number; max_tokens?: number }
+) {
+  const response = await fetch(NVIDIA_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      model: process.env.NVIDIA_MODEL || "nvidia/nemotron-3-ultra-550b-a55b",
+      messages,
+      temperature: opts?.temperature ?? 0.3,
+      max_tokens: opts?.max_tokens ?? 4096,
+      top_p: 0.9,
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const msg =
+      data.error?.message || data.message || data.detail || "NVIDIA API 請求失敗";
+    throw Object.assign(new Error(msg), { status: response.status, data });
+  }
+  return (data.choices?.[0]?.message?.content || "").trim();
+}
+
+async function toLegalLanguage(
+  apiKey: string,
+  raw: string,
+  parties: {
+    defendant: string;
+    plaintiff: string;
+    defendantId?: string;
+    plaintiffId?: string;
+  }
+): Promise<string> {
+  const system = `你是巴拉國法廳的書記官。任務：把使用者的日常陳述改寫成正式法律用語，供法官審理。
+
+規則：
+1. 必須使用下列當事人稱謂，不得改名：
+   - 被告：${parties.defendant}${parties.defendantId ? `（身分證字號 ${parties.defendantId}）` : ""}
+   - 提告人／告訴人：${parties.plaintiff}${parties.plaintiffId ? `（身分證字號 ${parties.plaintiffId}）` : ""}
+2. 使用客觀、第三人稱、精簡法言法語（如：涉嫌、指稱、行為時、結果、證據、損害、故意／過失等）。
+3. 保留所有具體事實（時間、地點、行為、結果、金額、傷勢等），不得虛構。
+4. 若資訊不足，在文末以「尚待釐清：…」列出。
+5. 只輸出改寫後的法律用語正文，不要標題、不要解釋、不要判決。`;
+
+  return callNvidia(
+    apiKey,
+    [
+      { role: "system", content: system },
+      { role: "user", content: raw },
+    ],
+    { temperature: 0.2, max_tokens: 2048 }
+  );
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { messages } = body;
+    const { messages, defendant, plaintiff, defendantId, plaintiffId } = body;
 
     if (!messages || !Array.isArray(messages)) {
       return NextResponse.json({ error: "缺少 messages" }, { status: 400 });
+    }
+
+    const def = typeof defendant === "string" ? defendant.trim() : "";
+    const pla = typeof plaintiff === "string" ? plaintiff.trim() : "";
+    if (!def || !pla) {
+      return NextResponse.json(
+        { error: "開庭必須提供被告姓名（defendant）與提告人姓名（plaintiff）" },
+        { status: 400 }
+      );
     }
 
     const apiKey = process.env.NVIDIA_API_KEY;
@@ -26,16 +97,70 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const recentText = messages
-      .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-      .slice(-8)
-      .map((m: { content: string }) => m.content)
-      .join("\n");
+    const parties = {
+      defendant: def,
+      plaintiff: pla,
+      defendantId:
+        typeof defendantId === "string" && defendantId.trim()
+          ? defendantId.trim()
+          : undefined,
+      plaintiffId:
+        typeof plaintiffId === "string" && plaintiffId.trim()
+          ? plaintiffId.trim()
+          : undefined,
+    };
+
+    const lastUser =
+      [...messages].reverse().find((m: { role: string }) => m.role === "user")
+        ?.content || "";
+
+    if (!lastUser.trim()) {
+      return NextResponse.json({ error: "缺少使用者陳述" }, { status: 400 });
+    }
+
+    let legalText = "";
+    try {
+      legalText = await toLegalLanguage(apiKey, lastUser, parties);
+    } catch (e) {
+      console.error("legal rewrite error:", e);
+      return NextResponse.json(
+        {
+          error:
+            e instanceof Error
+              ? `法律用語轉換失敗：${e.message}`
+              : "法律用語轉換失敗",
+        },
+        { status: 502 }
+      );
+    }
+
+    if (!legalText) {
+      return NextResponse.json(
+        { error: "法律用語轉換結果為空" },
+        { status: 502 }
+      );
+    }
+
+    const recentText = [
+      lastUser,
+      legalText,
+      parties.defendant,
+      parties.plaintiff,
+      parties.defendantId || "",
+      parties.plaintiffId || "",
+    ].join("\n");
     const { idNumbers, names } = extractIdentifiers(recentText);
+    if (parties.defendantId) idNumbers.push(parties.defendantId);
+    if (parties.plaintiffId) idNumbers.push(parties.plaintiffId);
+    names.push(parties.defendant, parties.plaintiff);
+
     let persons: Awaited<ReturnType<typeof lookupPersons>>["persons"] = [];
     let cases: Awaited<ReturnType<typeof lookupPersons>>["cases"] = [];
     try {
-      const found = await lookupPersons({ idNumbers, names });
+      const found = await lookupPersons({
+        idNumbers: [...new Set(idNumbers)],
+        names: [...new Set(names)],
+      });
       persons = found.persons;
       cases = found.cases;
     } catch (e) {
@@ -43,56 +168,39 @@ export async function POST(req: NextRequest) {
     }
 
     const systemPrompt = await buildSystemPrompt({ persons, cases });
+    const partyBlock = `【本案當事人（已登錄，必須採納）】\n被告：${parties.defendant}${parties.defendantId ? `，身分證字號 ${parties.defendantId}` : ""}\n提告人：${parties.plaintiff}${parties.plaintiffId ? `，身分證字號 ${parties.plaintiffId}` : ""}\n\n【書記官整理之法律用語案情】\n${legalText}`;
 
     const chatMessages = [
       { role: "system", content: systemPrompt },
-      ...messages.filter((m: { role: string }) => m.role !== "system"),
+      { role: "user", content: partyBlock },
     ];
 
-    const response = await fetch(
-      "https://integrate.api.nvidia.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          Accept: "application/json",
+    let content = "";
+    try {
+      content = await callNvidia(apiKey, chatMessages, {
+        temperature: 0.3,
+        max_tokens: 4096,
+      });
+    } catch (e) {
+      console.error("LawSI error:", e);
+      return NextResponse.json(
+        {
+          error: e instanceof Error ? e.message : "LawSI 審理失敗",
+          legal_text: legalText,
         },
-        body: JSON.stringify({
-          model:
-            process.env.NVIDIA_MODEL || "nvidia/nemotron-3-ultra-550b-a55b",
-          messages: chatMessages,
-          temperature: 0.3,
-          max_tokens: 4096,
-          top_p: 0.9,
-        }),
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error("NVIDIA API error:", data);
-      const msg =
-        data.error?.message ||
-        data.message ||
-        data.detail ||
-        "NVIDIA API 請求失敗";
-      return NextResponse.json({ error: msg }, { status: response.status });
+        { status: 502 }
+      );
     }
-
-    let content = data.choices?.[0]?.message?.content || "";
 
     const tags = parseJudgmentTags(content);
     if (tags.case_summary || tags.punishments) {
-      const lastUser =
-        [...messages].reverse().find((m: { role: string }) => m.role === "user")
-          ?.content || "";
       try {
         await saveJudgment({
-          id_number: tags.id_number || idNumbers[0] || null,
-          name: tags.name || names[0] || null,
-          case_summary: tags.case_summary || tags.event || content.slice(0, 200),
+          id_number:
+            tags.id_number || parties.defendantId || idNumbers[0] || null,
+          name: tags.name || parties.defendant || names[0] || null,
+          case_summary:
+            tags.case_summary || tags.event || content.slice(0, 200),
           event_clarification: tags.event,
           punishments: tags.punishments,
           reasons: tags.reasons,
@@ -120,9 +228,12 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       content,
+      legal_text: legalText,
       meta: {
         matched_persons: persons.length,
         matched_cases: cases.length,
+        defendant: parties.defendant,
+        plaintiff: parties.plaintiff,
       },
     });
   } catch (err) {

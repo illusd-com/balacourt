@@ -15,7 +15,9 @@ import {
   updateHearingMessages,
 } from "@/lib/hearing";
 
-export const maxDuration = 60;
+/** Vercel Fluid / Pro 可拉長；Hobby 仍受方案上限約束 */
+export const maxDuration = 120;
+export const dynamic = "force-dynamic";
 
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
@@ -25,7 +27,8 @@ async function callNvidia(
   opts?: { temperature?: number; max_tokens?: number }
 ) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 55_000);
+  // 留餘裕給寫庫與回傳 JSON
+  const timer = setTimeout(() => controller.abort(), 100_000);
 
   try {
     const response = await fetch(NVIDIA_URL, {
@@ -38,8 +41,8 @@ async function callNvidia(
       body: JSON.stringify({
         model: process.env.NVIDIA_MODEL || "google/gemma-4-31b-it",
         messages,
-        temperature: opts?.temperature ?? 0.25,
-        max_tokens: opts?.max_tokens ?? 3072,
+        temperature: opts?.temperature ?? 0.2,
+        max_tokens: opts?.max_tokens ?? 2048,
         top_p: 0.9,
       }),
       signal: controller.signal,
@@ -61,7 +64,9 @@ async function callNvidia(
     return (data.choices?.[0]?.message?.content || "").trim();
   } catch (e) {
     if (e instanceof Error && e.name === "AbortError") {
-      throw new Error("NVIDIA API 逾時（超過 55 秒）。請稍後再試或換較快模型。");
+      throw new Error(
+        "NVIDIA API 逾時。建議在 Vercel 設定 NVIDIA_MODEL=meta/llama-3.1-8b-instruct 或 google/gemma-3-12b-it 以加快回應。"
+      );
     }
     throw e;
   } finally {
@@ -166,7 +171,7 @@ export async function POST(req: NextRequest) {
       try {
         const prev = await getHearingSlip(prevId, { publicView: true });
         if (prev && prev.status === "closed") {
-          previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n被告：${prev.defendant}／提告人：${prev.plaintiff}\n前次判決：\n${(prev.judgment || "").slice(0, 4000)}\n`;
+          previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n前次判決摘要：\n${(prev.judgment || "").slice(0, 2500)}\n`;
         }
       } catch (e) {
         console.error("previous slip", e);
@@ -180,7 +185,7 @@ export async function POST(req: NextRequest) {
             publicView: true,
           });
           if (prev) {
-            previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n前次判決：\n${(prev.judgment || "").slice(0, 4000)}\n`;
+            previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n前次判決摘要：\n${(prev.judgment || "").slice(0, 2500)}\n`;
           }
         }
       } catch (e) {
@@ -188,15 +193,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 縮小法規上下文，避免提示過長導致逾時
+    // 再縮小法規，讓 gemma-4-31b 有機會在時限內完成
     const systemPrompt = await buildSystemPrompt({
       persons,
       cases,
-      maxLegalChars: 16000,
+      maxLegalChars: 10000,
     });
-    const speedHint = `\n## 輸出要求\n1. 先輸出【法律用語案情】一段\n2. 再以 Markdown 輸出判決（一至五）\n3. 罰鍰用 Bla$\n4. 回覆精簡，勿冗長重複\n`;
+    const speedHint = `\n## 輸出要求（務必遵守）\n1. 先一行【法律用語案情】\n2. 再輸出一～五的判決，每段精簡\n3. 罰鍰用 Bla$\n4. 總輸出控制在合理篇幅，勿重複\n`;
 
-    const partyBlock = `【本案當事人】\n被告：${parties.defendant}\n提告人：${parties.plaintiff}\n\n【使用者日常陳述】\n${lastUser}\n\n請先轉成【法律用語案情】，再依巴拉國法規判決（Markdown）。`;
+    const partyBlock = `【本案當事人】\n被告：${parties.defendant}\n提告人：${parties.plaintiff}\n\n【使用者日常陳述】\n${lastUser}\n\n請先轉成【法律用語案情】，再依巴拉國法規判決。`;
 
     const chatMessages = [
       {
@@ -209,8 +214,8 @@ export async function POST(req: NextRequest) {
     let content = "";
     try {
       content = await callNvidia(apiKey, chatMessages, {
-        temperature: 0.25,
-        max_tokens: 3072,
+        temperature: 0.2,
+        max_tokens: 2048,
       });
     } catch (e) {
       console.error("LawSI error:", e);

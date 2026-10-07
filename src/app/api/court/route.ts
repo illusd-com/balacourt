@@ -15,6 +15,8 @@ import {
   updateHearingMessages,
 } from "@/lib/hearing";
 
+export const maxDuration = 60;
+
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
 async function callNvidia(
@@ -22,28 +24,49 @@ async function callNvidia(
   messages: { role: string; content: string }[],
   opts?: { temperature?: number; max_tokens?: number }
 ) {
-  const response = await fetch(NVIDIA_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.NVIDIA_MODEL || "google/gemma-4-31b-it",
-      messages,
-      temperature: opts?.temperature ?? 0.25,
-      max_tokens: opts?.max_tokens ?? 4096,
-      top_p: 0.9,
-    }),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    const msg =
-      data.error?.message || data.message || data.detail || "NVIDIA API 請求失敗";
-    throw Object.assign(new Error(msg), { status: response.status, data });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 55_000);
+
+  try {
+    const response = await fetch(NVIDIA_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        model: process.env.NVIDIA_MODEL || "google/gemma-4-31b-it",
+        messages,
+        temperature: opts?.temperature ?? 0.25,
+        max_tokens: opts?.max_tokens ?? 3072,
+        top_p: 0.9,
+      }),
+      signal: controller.signal,
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const msg =
+        data?.error?.message ||
+        data?.message ||
+        data?.detail ||
+        (typeof data?.error === "string" ? data.error : null) ||
+        `NVIDIA API 錯誤 HTTP ${response.status}`;
+      throw Object.assign(new Error(String(msg)), {
+        status: response.status,
+        data,
+      });
+    }
+    return (data.choices?.[0]?.message?.content || "").trim();
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      throw new Error("NVIDIA API 逾時（超過 55 秒）。請稍後再試或換較快模型。");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  return (data.choices?.[0]?.message?.content || "").trim();
 }
 
 function extractLegalSection(content: string): string | null {
@@ -143,7 +166,7 @@ export async function POST(req: NextRequest) {
       try {
         const prev = await getHearingSlip(prevId, { publicView: true });
         if (prev && prev.status === "closed") {
-          previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n被告：${prev.defendant}／提告人：${prev.plaintiff}\n前次判決：\n${(prev.judgment || "").slice(0, 6000)}\n`;
+          previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n被告：${prev.defendant}／提告人：${prev.plaintiff}\n前次判決：\n${(prev.judgment || "").slice(0, 4000)}\n`;
         }
       } catch (e) {
         console.error("previous slip", e);
@@ -157,7 +180,7 @@ export async function POST(req: NextRequest) {
             publicView: true,
           });
           if (prev) {
-            previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n前次判決：\n${(prev.judgment || "").slice(0, 6000)}\n`;
+            previousBlock = `\n\n【引用前次開庭單 #${prev.id}】\n總結：${prev.summary_title || "（無）"}\n前次判決：\n${(prev.judgment || "").slice(0, 4000)}\n`;
           }
         }
       } catch (e) {
@@ -165,13 +188,21 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const systemPrompt = await buildSystemPrompt({ persons, cases });
-    const speedHint = `\n## 輸出要求\n1. 先輸出【法律用語案情】\n2. 再以 Markdown 輸出判決結構\n3. 罰鍰用 Bla$\n`;
+    // 縮小法規上下文，避免提示過長導致逾時
+    const systemPrompt = await buildSystemPrompt({
+      persons,
+      cases,
+      maxLegalChars: 16000,
+    });
+    const speedHint = `\n## 輸出要求\n1. 先輸出【法律用語案情】一段\n2. 再以 Markdown 輸出判決（一至五）\n3. 罰鍰用 Bla$\n4. 回覆精簡，勿冗長重複\n`;
 
     const partyBlock = `【本案當事人】\n被告：${parties.defendant}\n提告人：${parties.plaintiff}\n\n【使用者日常陳述】\n${lastUser}\n\n請先轉成【法律用語案情】，再依巴拉國法規判決（Markdown）。`;
 
     const chatMessages = [
-      { role: "system", content: systemPrompt + "\n" + speedHint + previousBlock },
+      {
+        role: "system",
+        content: systemPrompt + "\n" + speedHint + previousBlock,
+      },
       { role: "user", content: partyBlock },
     ];
 
@@ -179,12 +210,21 @@ export async function POST(req: NextRequest) {
     try {
       content = await callNvidia(apiKey, chatMessages, {
         temperature: 0.25,
-        max_tokens: 4096,
+        max_tokens: 3072,
       });
     } catch (e) {
       console.error("LawSI error:", e);
+      const msg = e instanceof Error ? e.message : "LawSI 審理失敗";
+      const status =
+        e && typeof e === "object" && "status" in e
+          ? Number((e as { status?: number }).status) || 502
+          : 502;
+      return NextResponse.json({ error: msg }, { status });
+    }
+
+    if (!content) {
       return NextResponse.json(
-        { error: e instanceof Error ? e.message : "LawSI 審理失敗" },
+        { error: "AI 回傳空白內容，請再試一次" },
         { status: 502 }
       );
     }

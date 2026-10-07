@@ -81,6 +81,9 @@ export default function HearingRoomPage({
     setLoading(true);
     setLastLegalText(null);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 70_000);
+
     try {
       const res = await fetch("/api/court", {
         method: "POST",
@@ -93,16 +96,24 @@ export default function HearingRoomPage({
           testMode: Boolean(slip.test_mode),
           messages: nextMessages,
         }),
+        signal: controller.signal,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "請求失敗");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          (data && data.error) || `請求失敗（HTTP ${res.status}）`
+        );
+      }
 
       if (data.legal_text) setLastLegalText(data.legal_text);
       if (data.summary_title) setSummaryTitle(data.summary_title);
 
       const withAi = [
         ...nextMessages,
-        { role: "assistant" as const, content: data.content || "無法取得回應" },
+        {
+          role: "assistant" as const,
+          content: data.content || "無法取得回應",
+        },
       ];
       setMessages(withAi);
 
@@ -113,7 +124,14 @@ export default function HearingRoomPage({
         if (d2.summary_title) setSummaryTitle(d2.summary_title);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "發生錯誤";
+      let msg = "發生錯誤";
+      if (err instanceof Error) {
+        if (err.name === "AbortError") {
+          msg = "審理逾時（超過 70 秒）。請縮短案情描述後再試，或稍後重試。";
+        } else {
+          msg = err.message;
+        }
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -122,6 +140,7 @@ export default function HearingRoomPage({
         },
       ]);
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
     }
   }
@@ -138,7 +157,11 @@ export default function HearingRoomPage({
       <section className="section">
         <div className="container">
           <p style={{ color: "#b91c1c" }}>{error}</p>
-          <Link href="/court" className="btn btn-primary" style={{ marginTop: "1rem" }}>
+          <Link
+            href="/court"
+            className="btn btn-primary"
+            style={{ marginTop: "1rem" }}
+          >
             返回開庭登錄
           </Link>
         </div>
@@ -157,22 +180,39 @@ export default function HearingRoomPage({
   }
 
   return (
-    <section className="section" style={{ paddingTop: "2.5rem", paddingBottom: "3rem" }}>
+    <section
+      className="section"
+      style={{ paddingTop: "2.5rem", paddingBottom: "3rem" }}
+    >
       <div className="container">
         <header className="section-header" style={{ marginBottom: "1.5rem" }}>
-          <p style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
+          <p
+            style={{
+              fontSize: "0.8125rem",
+              color: "var(--text-muted)",
+              marginBottom: "0.35rem",
+            }}
+          >
             開庭單 #{slip.id}
             {slip.status === "closed" ? " · 已完結（僅供閱覽）" : " · 審理中"}
           </p>
           <h1 className="section-title">
             {summaryTitle || slip.summary_title || "AI法廳 · LawSI"}
           </h1>
-          <p style={{ color: "var(--text-secondary)", marginTop: "0.5rem", fontSize: "0.9375rem" }}>
+          <p
+            style={{
+              color: "var(--text-secondary)",
+              marginTop: "0.5rem",
+              fontSize: "0.9375rem",
+            }}
+          >
             被告：{slip.defendant} ／ 提告人：{slip.plaintiff}
             {slip.previous_slip_id && (
               <>
                 {" "}／ 前次：
-                <Link href={`/court/${slip.previous_slip_id}`}>#{slip.previous_slip_id}</Link>
+                <Link href={`/court/${slip.previous_slip_id}`}>
+                  #{slip.previous_slip_id}
+                </Link>
               </>
             )}
           </p>
@@ -180,7 +220,13 @@ export default function HearingRoomPage({
 
         <div className="court-layout">
           <aside className="court-sidebar">
-            <h3 style={{ fontSize: "0.9375rem", fontWeight: 600, marginBottom: "1rem" }}>
+            <h3
+              style={{
+                fontSize: "0.9375rem",
+                fontWeight: 600,
+                marginBottom: "1rem",
+              }}
+            >
               開庭單資訊
             </h3>
             <ul
@@ -200,15 +246,36 @@ export default function HearingRoomPage({
                 <li>完結：{new Date(slip.closed_at).toLocaleString("zh-TW")}</li>
               )}
             </ul>
-            <div style={{ marginTop: "1.25rem", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-              <Link href="/completed" className="btn btn-ghost" style={{ fontSize: "0.8125rem" }}>
+            <div
+              style={{
+                marginTop: "1.25rem",
+                display: "flex",
+                flexDirection: "column",
+                gap: "0.5rem",
+              }}
+            >
+              <Link
+                href="/completed"
+                className="btn btn-ghost"
+                style={{ fontSize: "0.8125rem" }}
+              >
                 已完結審判
               </Link>
-              <Link href="/court" className="btn btn-ghost" style={{ fontSize: "0.8125rem" }}>
+              <Link
+                href="/court"
+                className="btn btn-ghost"
+                style={{ fontSize: "0.8125rem" }}
+              >
                 新開庭
               </Link>
             </div>
-            <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "1.5rem" }}>
+            <p
+              style={{
+                fontSize: "0.75rem",
+                color: "var(--text-muted)",
+                marginTop: "1.5rem",
+              }}
+            >
               LawSI · Ops-2.1
             </p>
           </aside>
@@ -216,8 +283,13 @@ export default function HearingRoomPage({
           <div className="chat-container">
             <div className="chat-messages">
               {messages.map((m, i) => (
-                <div key={i} className={`msg ${m.role === "user" ? "msg-user" : "msg-ai"}`}>
-                  <div className="msg-role">{m.role === "user" ? "您" : "LawSI"}</div>
+                <div
+                  key={i}
+                  className={`msg ${m.role === "user" ? "msg-user" : "msg-ai"}`}
+                >
+                  <div className="msg-role">
+                    {m.role === "user" ? "您" : "LawSI"}
+                  </div>
                   {m.role === "assistant" ? (
                     <MarkdownBody content={m.content} />
                   ) : (
@@ -228,7 +300,11 @@ export default function HearingRoomPage({
               {lastLegalText && !readOnly && (
                 <div
                   className="msg msg-ai"
-                  style={{ borderStyle: "dashed", background: "var(--bg)", fontSize: "0.8125rem" }}
+                  style={{
+                    borderStyle: "dashed",
+                    background: "var(--bg)",
+                    fontSize: "0.8125rem",
+                  }}
                 >
                   <div className="msg-role">系統 · 法律用語轉換</div>
                   <MarkdownBody content={lastLegalText} />
@@ -242,8 +318,14 @@ export default function HearingRoomPage({
                     <span />
                     <span />
                   </div>
-                  <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.5rem" }}>
-                    LawSI 審理中…
+                  <p
+                    style={{
+                      fontSize: "0.75rem",
+                      color: "var(--text-muted)",
+                      marginTop: "0.5rem",
+                    }}
+                  >
+                    LawSI 審理中…（通常 15–45 秒，逾時會自動提示）
                   </p>
                 </div>
               )}
@@ -253,9 +335,14 @@ export default function HearingRoomPage({
             {readOnly ? (
               <div
                 className="chat-input-area"
-                style={{ justifyContent: "center", color: "var(--text-muted)", fontSize: "0.875rem" }}
+                style={{
+                  justifyContent: "center",
+                  color: "var(--text-muted)",
+                  fontSize: "0.875rem",
+                }}
               >
-                本開庭單已完結，僅供閱覽。可至「已完結審判」搜尋，或引用本 ID 進行二次審判。
+                本開庭單已完結，僅供閱覽。可至「已完結審判」搜尋，或引用本 ID
+                進行二次審判。
               </div>
             ) : (
               <div className="chat-input-area">

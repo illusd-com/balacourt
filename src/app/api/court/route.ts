@@ -30,7 +30,7 @@ async function callNvidia(
       Accept: "application/json",
     },
     body: JSON.stringify({
-      model: process.env.NVIDIA_MODEL || "google/gemma-3-12b-it",
+      model: process.env.NVIDIA_MODEL || "google/gemma-4-31b-it",
       messages,
       temperature: opts?.temperature ?? 0.25,
       max_tokens: opts?.max_tokens ?? 4096,
